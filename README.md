@@ -1,12 +1,13 @@
 # 🕸️ bb-skills
 
-Five [Claude Code](https://claude.com/claude-code) / [OpenCode](https://opencode.ai) skills that turn
+Six [Claude Code](https://claude.com/claude-code) / [OpenCode](https://opencode.ai) skills that turn
 an agentic coding CLI into a structured bug bounty workflow — recon → triage → deep
-app testing → gated-host fuzzing → JSON type-confusion auditing.
+app testing → gated-host fuzzing → JSON type-confusion auditing → validation & reporting.
 
 Each skill is a self-contained `SKILL.md` with real commands (subfinder, httpx, katana,
-ffuf, nuclei, Burp workflow, etc.), not pseudocode. They're designed to be used in
-order, with each skill's output feeding the next one's input.
+ffuf, nuclei, Burp workflow, etc.) and real testing procedures (exact bypass tables,
+IDOR variants, CVSS references), not pseudocode or "go test for XSS." They're designed
+to be used in order, with each skill's output feeding the next one's input.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -14,8 +15,8 @@ order, with each skill's output feeding the next one's input.
 ╚══════════════════════════════════════════════════════════════════════════╝
 
                         ┌──────────────────┐
-                        │   reconforge     │  subdomain enum
-                        │                  │  + DNS bruteforce
+                        │   reconforge     │  subdomain enum + DNS
+                        │                  │  bruteforce + cloud/secrets
                         └────────┬─────────┘
                                  │ resolved subdomains
                                  ▼
@@ -45,6 +46,12 @@ order, with each skill's output feeding the next one's input.
               ┌───────────────┐
               │  jsonjuggler  │  type confusion
               │               │  / NoSQLi audit
+              └───────┬───────┘
+                      │  confirmed finding
+                      ▼
+              ┌───────────────┐
+              │   huntgate    │  7-Question Gate
+              │               │  + chain hunting + report
               └───────────────┘
 ```
 
@@ -52,18 +59,19 @@ order, with each skill's output feeding the next one's input.
 
 | # | Skill | What it does |
 |---|-------|---------------|
-| 1 | [`reconforge`](./reconforge) | Passive subdomain aggregation (subfinder/amass/assetfinder/chaos/crt.sh), DNS bruteforce, permutation generation, resolution, and subdomain-takeover checks. |
-| 2 | [`scopehawk`](./scopehawk) | Live-host probing (httpx), port sweep (naabu), screenshots (gowitness), tech fingerprinting, and grouping targets into Tier 1 (live apps) / Tier 2 (gated 403/500) / Tier 3 (noise). |
-| 3 | [`deepdive`](./deepdive) | Prompts you to pick one live app from the Tier 1 list, then does full manual + automated mapping of it: Burp-logged browsing, two test accounts, JS file mining for hidden endpoints/secrets, historical URL mining, API spec discovery, and the actual vuln testing pass. |
-| 4 | [`wallbreaker`](./wallbreaker) | Content/vhost fuzzing and 403-bypass technique sweep for gated hosts, plus 500-error triage and header/misconfig checks. Promotes unblocked hosts back to `deepdive`. |
-| 5 | [`jsonjuggler`](./jsonjuggler) | Exhaustive JSON type-confusion / type-juggling / NoSQL-injection tester for any JSON API endpoint — 12-class payload matrix with a flatten → mutate → diff → confirm workflow. Called from within `deepdive` whenever a comparison-sensitive JSON endpoint shows up. Adapted from [0xSzit/json-juggler](https://github.com/0xSzit/json-juggler). |
+| 1 | [`reconforge`](./reconforge) | Passive subdomain aggregation, DNS bruteforce, permutation generation, resolution, subdomain-takeover checks, cloud/S3 bucket enumeration, GitHub secrets dorking, and a quick-wins checklist run across every resolved host. |
+| 2 | [`scopehawk`](./scopehawk) | Live-host probing, port sweep, screenshots, tech fingerprinting, and grouping targets into Tier 1 (live apps) / Tier 2 (gated 403/500) / Tier 3 (noise). |
+| 3 | [`deepdive`](./deepdive) | Prompts you to pick one live app from the Tier 1 list, then does full manual + automated mapping: Burp-logged browsing, two test accounts with captured auth state for A/B diffing, JS mining, historical URL mining, API spec discovery, and per-category testing procedures (auth, IDOR's 10 variants, injection, business logic/race conditions, file upload bypass table, CSRF, rate limiting) with exact bypass tables for SSRF and open redirect. |
+| 4 | [`wallbreaker`](./wallbreaker) | Content/vhost fuzzing, a real 403-bypass technique checklist, and 500-error triage that greps responses for framework-specific stack-trace patterns instead of just reading them by eye. Promotes unblocked hosts back to `deepdive`. |
+| 5 | [`jsonjuggler`](./jsonjuggler) | Exhaustive JSON type-confusion / type-juggling / NoSQL-injection tester — 12-class payload matrix with a flatten → mutate → diff → confirm workflow. Called from within `deepdive` whenever a comparison-sensitive JSON endpoint shows up. |
+| 6 | [`huntgate`](./huntgate) | The mandatory checkpoint before writing up anything: a kill-list for theoretical findings, an A→B→C chain-hunting protocol (chains pay 3–10x more than single bugs), the 7-Question Gate, CVSS reference, and ready-to-fill report templates. |
 
 ## Order of execution
 
 ```
-1 (reconforge) → 2 (scopehawk) ─┬→ 3 (deepdive) ──→ 5 (jsonjuggler)
-                                 └→ 4 (wallbreaker) ──┘
-                                    (wins loop back into 3)
+1 (reconforge) → 2 (scopehawk) ─┬→ 3 (deepdive) ──┬→ 5 (jsonjuggler) ─┐
+                                 └→ 4 (wallbreaker)─┘                  ├→ 6 (huntgate)
+                                    (wins loop back into 3)  ──────────┘
 ```
 
 - **1 → 2** run once per engagement (re-run periodically — scope changes over time).
@@ -71,6 +79,32 @@ order, with each skill's output feeding the next one's input.
 - **5** isn't a standalone phase — it's invoked from inside **3** whenever a JSON
   endpoint worth attacking (auth, OTP, token/reset compare, search/filter) turns up.
 - Anything **4** unblocks gets promoted into Tier 1 and re-enters **3**.
+- **6 runs before every single report**, no exceptions — including findings from
+  `wallbreaker` that look report-worthy on their own, not just ones that came out
+  of a full `deepdive` pass.
+
+## Hunting rules (apply across every skill)
+
+These aren't per-skill advice — they govern how you use the whole pipeline:
+
+1. **Read full scope first.** Verify every asset is actually owned by the target
+   org before touching it, every time — not just once at the start.
+2. **No theoretical bugs.** "Can an attacker do this right now against a real
+   user who took no unusual action?" If no, stop — don't write it up.
+3. **5-minute rule.** A target showing nothing but 401/403/404 after 5 minutes
+   of probing — move on, don't spiral.
+4. **One-hour rule.** Stuck on one target an hour with no progress — switch
+   context, come back later or not at all.
+5. **Impact-first hunting.** Before diving into a target, ask "what's the worst
+   thing if auth were broken here?" If the answer is nothing valuable, skip it.
+6. **Hunt less-saturated classes.** XSS/SSRF/XXE have the most competition —
+   business logic, race conditions, OAuth/OIDC chains, and cache poisoning pay
+   well with less competition.
+7. **Chain before you report.** See `huntgate`'s A→B→C protocol — a confirmed
+   bug is a reason to look at its siblings before writing anything up, not a
+   reason to stop.
+8. **Validate before you write.** `huntgate` is not optional polish — run it
+   before every report, not after you've already spent 30 minutes drafting one.
 
 ## Install
 
@@ -83,7 +117,7 @@ cp -r bb-skills/*/ ./.claude/skills/
 ```
 Claude Code auto-discovers any folder containing a `SKILL.md` under `.claude/skills/`.
 Just describe what you're doing in plain language ("run recon on target.com", "fuzz
-this 403") and the matching skill activates automatically.
+this 403", "validate this finding") and the matching skill activates automatically.
 
 ### OpenCode
 ```bash
@@ -101,7 +135,8 @@ These skills assume a standard recon/hunting toolbox is installed and on `$PATH`
 subfinder · amass · assetfinder · chaos · puredns · alterx · gotator · subzy
 httpx · naabu · gowitness · whatweb · nuclei
 katana · hakrawler · gau · waybackurls · gf · ffuf · feroxbuster
-Burp Suite (manual proxy-logged testing)
+trufflehog · gitleaks
+Burp Suite (manual proxy-logged testing, Turbo Intruder for race conditions)
 ```
 
 Most are installable via `go install` ([ProjectDiscovery](https://github.com/projectdiscovery) tools)
@@ -118,10 +153,13 @@ before running anything. Unauthorized testing is illegal.
 
 ## Credits
 
-Built on patterns and references from:
+Built on patterns, tables, and methodology from:
 - [0xSzit/BountyCompass](https://github.com/0xSzit/BountyCompass)
 - [0xN0RMXL/BugBountySkills](https://github.com/0xN0RMXL/BugBountySkills)
 - [0xSzit/json-juggler](https://github.com/0xSzit/json-juggler)
+- [shuvonsec/claude-bug-bounty](https://skillvault.md/shuvonsec/claude-bug-bounty/bug-bounty) — 7-Question Gate, A→B chaining, bypass tables, CVSS/reporting templates
+- [awarexone/Agentic-Bug-Hunter](https://github.com/awarexone/Agentic-Bug-Hunter) — auth-aware hunting, hunting rules
+- [instavm/security-skills](https://github.com/instavm/security-skills) — MITM auth-diff pattern for IDOR detection
 
 ## License
 

@@ -69,11 +69,54 @@ If `*.target.com` resolves to a single IP for garbage subdomains, you have a wil
 filter it out before trusting bruteforce hits (`puredns` flags already handle most of this,
 but spot-check with `dig random123456.target.com`).
 
+## 7. Cloud asset enumeration
+Buckets and storage accounts don't show up in DNS recon — brute them separately:
+```bash
+for suffix in dev staging test backup api data assets static cdn prod uploads; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "https://${TARGET}-${suffix}.s3.amazonaws.com/")
+  [ "$code" != "404" ] && echo "$code  ${TARGET}-${suffix}.s3.amazonaws.com"
+done
+# Firebase open-read check
+curl -s "https://${TARGET}.firebaseio.com/.json"
+```
+A listable bucket is low severity alone — but check what's inside: JS bundles in
+S3 buckets have leaked OAuth `client_secret` values in real paid reports (see the
+`huntgate` skill's chain table). Don't stop at "bucket is public," open it.
+
+## 8. GitHub/secrets recon (if the target has public repos)
+```bash
+# github-subdomains already pulled subs in step 1; now hunt for leaked creds
+trufflehog github --org=$TARGET_ORG --json > raw/trufflehog.json
+gitleaks detect --source=. --report-path raw/gitleaks.json   # on any cloned target repo
+# Manual dorking on github.com search UI (no good CLI for this):
+#   "target.com" filetype:env OR filetype:json OR filetype:log
+#   "target.com" password OR secret OR api_key
+```
+
+## 9. Quick wins checklist — run these against every resolved host, not just Tier 1
+```
+[ ] Subdomain takeover (step 5 above)
+[ ] Exposed .git (/.git/config, /.git/HEAD)
+[ ] Exposed env files (/.env, /.env.local, /.env.bak)
+[ ] Default credentials on any admin panel surfaced
+[ ] GraphQL introspection enabled (informational alone — note it, keep moving)
+[ ] Spring actuators (/actuator/env, /actuator/heapdump)
+```
+Framework-specific quick wins once tech is fingerprinted (full fingerprinting
+happens in `scopehawk`, but these are cheap to check immediately):
+```
+Laravel:   /horizon  /telescope  /.env  /storage/logs/laravel.log
+WordPress: /wp-json/wp/v2/users  /xmlrpc.php  /?author=1
+Node.js:   /.env  /graphql (try introspection)  /_debug
+```
+
 ## Output
 `resolved/final_resolved.txt` — the canonical list. Hand this to the
-`live-host-fingerprint` skill next.
+`scopehawk` skill next.
 
 ## Also worth doing (don't skip)
 - Wayback/gau URL collection and ASN/IP-range discovery can surface subdomains CT logs miss:
   `echo $TARGET | waybackurls`, `asnmap -d $TARGET`.
 - Re-run this whole skill periodically on long engagements — programs add assets over time.
+- **5-minute rule**: if a specific asset shows nothing but 401/403/404 after 5
+  minutes of probing, move on — don't spiral on a dead target this early.

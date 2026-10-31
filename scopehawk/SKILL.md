@@ -5,7 +5,7 @@ description: Use after subdomain enumeration is done, when asked to "probe live 
 
 # Live Host Discovery, Visual Recon, Fingerprinting & Prioritization
 
-Input: `resolved/final_resolved.txt` from the recon-subdomain-enum skill.
+Input: `resolved/final_resolved.txt` from the reconforge skill.
 
 ## 1. Live host probing
 ```bash
@@ -42,9 +42,9 @@ cat live/httpx.json | jq -r 'select(.cdn==true) | .input' > live/behind_cdn.txt
 Parse `live/httpx.json` and bucket into:
 
 - **Tier 1 — active full-app targets**: 200/301/302 with real content, login forms,
-  API responses, distinct tech stack (these feed `app-mapping-testing` skill).
+  API responses, distinct tech stack (these feed `deepdive` skill).
 - **Tier 2 — interesting but gated**: 401/403/404-with-custom-body, WAF-fronted,
-  unusual headers (these feed `fuzz-403-500` skill).
+  unusual headers (these feed `wallbreaker` skill).
 - **Tier 3 — noise**: parked domains, identical default vhost pages, CDN-only with
   no distinguishing content, dead hosts (deprioritize, revisit later).
 
